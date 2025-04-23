@@ -475,6 +475,7 @@ impl KNN {
 ///
 /// Suitable for discrete feature counts (e.g., word frequencies in text classification).
 /// Supports multi-class classification by computing log class priors and feature log-likelihoods.
+/// Uses a builder pattern for configuration, with optional normalization via StandardScaler.
 ///
 /// # Example
 /// ```
@@ -495,7 +496,7 @@ pub struct NaiveBayesBuilder {
 }
 
 impl NaiveBayesBuilder {
-    /// creates a new Naive Bayes builder with default alpha (1.0) and normalization (false).
+    /// Creates a new Naive Bayes builder with default alpha (1.0) and normalization (false).
     pub fn new() -> Self {
         NaiveBayesBuilder {
             alpha: 1.0,
@@ -504,25 +505,25 @@ impl NaiveBayesBuilder {
         }
     }
 
-    /// sets the Laplace smoothing parameter (must be positive).
+    /// Sets the Laplace smoothing parameter (must be positive).
     pub fn alpha(mut self, alpha: f64) -> Self {
         self.alpha = alpha;
         self
     }
 
-    /// enables or disables feature normalization.
+    /// Enables or disables feature normalization.
     pub fn normalize(mut self, normalize: bool) -> Self {
         self.normalize = normalize;
         self
     }
 
-    /// sets the feature scaler.
+    /// Sets the feature scaler.
     pub fn scaler(mut self, scaler: StandardScaler) -> Self {
         self.x_scaler = scaler;
         self
     }
 
-    /// builds the Naive Bayes classifier.
+    /// Builds the Naive Bayes classifier.
     pub fn build(self) -> NaiveBayes {
         if self.alpha <= 0.0 {
             panic!("Alpha must be positive");
@@ -541,10 +542,10 @@ impl NaiveBayesBuilder {
 
 pub struct NaiveBayes {
     alpha: f64,
-    class_priors: HashMap<i32, f64>, // log priors for each class
-    feature_log_likelihoods: HashMap<i32, Array1<f64>>, // log likelihoods per class
-    vocab_size: usize, 
-    classes: Vec<i32>,
+    class_priors: HashMap<i32, f64>, // Log priors for each class
+    feature_log_likelihoods: HashMap<i32, Array1<f64>>, // Log likelihoods per class
+    vocab_size: usize, // Number of features
+    classes: Vec<i32>, // Unique class labels
     normalize: bool,
     x_scaler: StandardScaler,
 }
@@ -680,6 +681,7 @@ impl NaiveBayes {
         Ok(predictions)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1015,6 +1017,26 @@ fn naive_bayes_fit_predict() {
     nb.fit(&x, &y, 0.0, 1).unwrap();
     let predictions = nb.predict(&x).unwrap();
     assert_eq!(predictions.len(), 4);
+    // Check if predictions are valid class labels
+    for &pred in predictions.iter() {
+        assert!(y.iter().any(|&label| label == pred));
+    }
+}
+
+#[test]
+fn naive_bayes_multi_class() {
+    let mut nb = NaiveBayesBuilder::new().normalize(false).alpha(1.0).build();
+    let x = array![
+        [2.0, 0.0, 1.0],
+        [0.0, 3.0, 0.0],
+        [1.0, 1.0, 2.0],
+        [3.0, 0.0, 1.0],
+        [0.0, 2.0, 1.0]
+    ];
+    let y = array![0.0, 1.0, 2.0, 0.0, 1.0];
+    nb.fit(&x, &y, 0.0, 1).unwrap();
+    let predictions = nb.predict(&x).unwrap();
+    assert_eq!(predictions.len(), 5);
     // Check if predictions are valid class labels
     for &pred in predictions.iter() {
         assert!(y.iter().any(|&label| label == pred));
