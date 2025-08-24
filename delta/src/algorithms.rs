@@ -1,6 +1,6 @@
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, BlackPortal ○
+// Copyright (c) 2025, BlackPortal
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -536,7 +536,11 @@ impl NaiveBayes {
         _learning_rate: f64,
         _epochs: usize,
     ) -> Result<(), ModelError> {
-        // Strict check for empty or invalid dimensions
+
+
+        if !self.alpha.is_finite() || self.alpha <= 0.0 {
+            return Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter));
+        }
 
         if x.ncols() == 0 || x.is_empty() || y.is_empty() {
             return Err(ModelError::Preprocessing(if x.ncols() == 0 {
@@ -544,14 +548,6 @@ impl NaiveBayes {
             } else {
                 PreprocessingError::EmptyInput
             }));
-        }
-
-        if x.is_empty() || y.is_empty() {
-            return Err(ModelError::Preprocessing(PreprocessingError::EmptyInput));
-        }
-
-        if x.ncols() == 0 {
-            return Err(ModelError::Preprocessing(PreprocessingError::NoFeatures));
         }
 
         if x.shape()[0] != y.shape()[0] {
@@ -611,8 +607,10 @@ impl NaiveBayes {
                 return Err(ModelError::Preprocessing(PreprocessingError::NoFeatures));
             }
 
-            let feature_counts: Array1<f64> = class_x.sum_axis(Axis(0)) + self.alpha;
-            let total_count = feature_counts.sum() + self.alpha * self.vocab_size as f64;
+            let raw_counts = class_x.sum_axis(Axis(0));
+            let feature_counts: Array1<f64> = &raw_counts + self.alpha;
+            let total_count = raw_counts.sum() + self.alpha * self.vocab_size as f64;
+
 
             let log_likelihoods = feature_counts.mapv(|v| (v / total_count).ln());
             self.feature_log_likelihoods.insert(class, log_likelihoods);
