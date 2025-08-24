@@ -920,7 +920,6 @@ mod tests {
         ));
     }
     
-    
     #[test]
     fn naive_bayes_fit_empty_input() {
         let mut nb = NaiveBayesBuilder::new().build();
@@ -1035,4 +1034,3 @@ mod tests {
         }
     }
 }
-
