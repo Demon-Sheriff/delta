@@ -471,24 +471,7 @@ impl KNN {
     }
 }
 
-/// Multinomial Naive Bayes classifier with Laplace smoothing.
-///
-/// Suitable for discrete feature counts (e.g., word frequencies in text classification).
-/// Supports multi-class classification by computing log class priors and feature log-likelihoods.
-/// Uses a builder pattern for configuration, with optional normalization via StandardScaler.
-///
-/// # Example
-/// ```
-/// use delta::algorithms::{NaiveBayes, NaiveBayesBuilder};
-/// use ndarray::{array, Array2, Array1};
-///
-/// let mut nb = NaiveBayesBuilder::new().build();
-/// let x: Array2<f64> = array![[1.0, 0.0], [0.0, 2.0], [1.0, 1.0]];
-/// let y: Array1<f64> = array![0.0, 1.0, 0.0];
-/// nb.fit(&x, &y, 0.0, 1).unwrap();
-/// let pred = nb.predict(&x).unwrap();
-/// assert_eq!(pred.len(), 3);
-/// ```
+
 pub struct NaiveBayesBuilder {
     alpha: f64,
     normalize: bool,
@@ -496,7 +479,6 @@ pub struct NaiveBayesBuilder {
 }
 
 impl NaiveBayesBuilder {
-    /// Creates a new Naive Bayes builder with default alpha (1.0) and normalization (false).
     pub fn new() -> Self {
         NaiveBayesBuilder {
             alpha: 1.0,
@@ -505,25 +487,21 @@ impl NaiveBayesBuilder {
         }
     }
 
-    /// Sets the Laplace smoothing parameter (must be positive).
     pub fn alpha(mut self, alpha: f64) -> Self {
         self.alpha = alpha;
         self
     }
 
-    /// Enables or disables feature normalization.
     pub fn normalize(mut self, normalize: bool) -> Self {
         self.normalize = normalize;
         self
     }
 
-    /// Sets the feature scaler.
     pub fn scaler(mut self, scaler: StandardScaler) -> Self {
         self.x_scaler = scaler;
         self
     }
 
-    /// Builds the Naive Bayes classifier.
     pub fn build(self) -> NaiveBayes {
         if self.alpha <= 0.0 {
             panic!("Alpha must be positive");
@@ -542,10 +520,10 @@ impl NaiveBayesBuilder {
 
 pub struct NaiveBayes {
     alpha: f64,
-    class_priors: HashMap<i32, f64>, // Log priors for each class
-    feature_log_likelihoods: HashMap<i32, Array1<f64>>, // Log likelihoods per class
-    vocab_size: usize, // Number of features
-    classes: Vec<i32>, // Unique class labels
+    class_priors: HashMap<i32, f64>, 
+    feature_log_likelihoods: HashMap<i32, Array1<f64>>, 
+    vocab_size: usize, 
+    classes: Vec<i32>,
     normalize: bool,
     x_scaler: StandardScaler,
 }
@@ -558,31 +536,48 @@ impl NaiveBayes {
         _learning_rate: f64,
         _epochs: usize,
     ) -> Result<(), ModelError> {
-        // Validate inputs
+        // Strict check for empty or invalid dimensions
+
+        if x.ncols() == 0 || x.is_empty() || y.is_empty() {
+            return Err(ModelError::Preprocessing(if x.ncols() == 0 {
+                PreprocessingError::NoFeatures
+            } else {
+                PreprocessingError::EmptyInput
+            }));
+        }
+
         if x.is_empty() || y.is_empty() {
             return Err(ModelError::Preprocessing(PreprocessingError::EmptyInput));
         }
+
         if x.ncols() == 0 {
             return Err(ModelError::Preprocessing(PreprocessingError::NoFeatures));
         }
+
         if x.shape()[0] != y.shape()[0] {
             return Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch {
                 expected: x.shape()[0],
                 actual: y.shape()[0],
             }));
         }
+
         if x.iter().any(|&v| v < 0.0) {
             return Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter));
         }
 
-        // Apply normalization if enabled
         let x_scaled = if self.normalize {
-            self.x_scaler.fit_transform(x).map_err(ModelError::Preprocessing)?
+            match self.x_scaler.fit_transform(x) {
+                Ok(scaled) => scaled,
+                Err(e) => return Err(ModelError::Preprocessing(e)),
+            }
         } else {
             x.clone()
         };
 
-        // Extract unique classes
+        if x_scaled.ncols() == 0 {
+            return Err(ModelError::Preprocessing(PreprocessingError::NoFeatures));
+        }
+
         let unique_classes: Vec<i32> = y
             .iter()
             .map(|&v| v.round() as i32)
@@ -592,20 +587,18 @@ impl NaiveBayes {
         if unique_classes.is_empty() {
             return Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter));
         }
+
         self.classes = unique_classes;
         self.vocab_size = x.ncols();
 
         let n_samples = x.shape()[0] as f64;
 
-        // Compute class priors
         for &class in &self.classes {
             let class_count = y.iter().filter(|&&v| (v.round() as i32) == class).count() as f64;
             self.class_priors.insert(class, (class_count / n_samples).ln());
         }
 
-        // Compute feature log-likelihoods with Laplace smoothing
         for &class in &self.classes {
-            // Select rows where y == class
             let class_indices: Vec<usize> = y
                 .iter()
                 .enumerate()
@@ -614,11 +607,13 @@ impl NaiveBayes {
                 .collect();
             let class_x = x_scaled.select(Axis(0), &class_indices);
 
-            // Sum feature counts + alpha
+            if class_x.ncols() == 0 {
+                return Err(ModelError::Preprocessing(PreprocessingError::NoFeatures));
+            }
+
             let feature_counts: Array1<f64> = class_x.sum_axis(Axis(0)) + self.alpha;
             let total_count = feature_counts.sum() + self.alpha * self.vocab_size as f64;
 
-            // Compute log-likelihoods
             let log_likelihoods = feature_counts.mapv(|v| (v / total_count).ln());
             self.feature_log_likelihoods.insert(class, log_likelihoods);
         }
@@ -627,7 +622,9 @@ impl NaiveBayes {
     }
 
     pub fn predict(&self, x: &Array2<f64>) -> Result<Array1<f64>, ModelError> {
-        // Validate inputs
+        if self.classes.is_empty() {
+            return Err(ModelError::Preprocessing(PreprocessingError::NotFitted));
+        }
         if x.is_empty() {
             return Err(ModelError::Preprocessing(PreprocessingError::EmptyInput));
         }
@@ -637,14 +634,10 @@ impl NaiveBayes {
                 actual: x.ncols(),
             }));
         }
-        if self.classes.is_empty() {
-            return Err(ModelError::Preprocessing(PreprocessingError::NotFitted));
-        }
         if x.iter().any(|&v| v < 0.0) {
             return Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter));
         }
 
-        // Apply normalization if enabled
         let x_scaled = if self.normalize {
             self.x_scaler.transform(x).map_err(ModelError::Preprocessing)?
         } else {
@@ -666,7 +659,6 @@ impl NaiveBayes {
                     .feature_log_likelihoods
                     .get(&class)
                     .ok_or(ModelError::Preprocessing(PreprocessingError::InvalidParameter))?;
-                // Compute log probability: prior + sum(feature * log_likelihood)
                 let log_prob = prior + row.dot(likelihoods);
 
                 if log_prob > max_log_prob {
@@ -927,118 +919,120 @@ mod tests {
             Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch { expected: 2, actual: 3 }))
         ));
     }
-}
-
-// Naive Bayes Tests
-#[test]
-fn naive_bayes_fit_empty_input() {
-    let mut nb = NaiveBayesBuilder::new().build();
-    let x: Array2<f64> = Array2::zeros((0, 2));
-    let y: Array1<f64> = Array1::zeros(0);
-    let result = nb.fit(&x, &y, 0.0, 1);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::EmptyInput))
-    ));
-}
-
-#[test]
-fn naive_bayes_fit_no_features() {
-    let mut nb = NaiveBayesBuilder::new().build();
-    let x: Array2<f64> = Array2::zeros((2, 0));
-    let y = array![0.0, 1.0];
-    let result = nb.fit(&x, &y, 0.0, 1);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::NoFeatures))
-    ));
-}
-
-#[test]
-fn naive_bayes_fit_dimension_mismatch() {
-    let mut nb = NaiveBayesBuilder::new().build();
-    let x = array![[1.0, 0.0], [0.0, 2.0]];
-    let y = array![0.0, 1.0, 0.0];
-    let result = nb.fit(&x, &y, 0.0, 1);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch {
-            expected: 2,
-            actual: 3
-        }))
-    ));
-}
-
-#[test]
-fn naive_bayes_fit_invalid_features() {
-    let mut nb = NaiveBayesBuilder::new().build();
-    let x = array![[1.0, -1.0], [0.0, 2.0]];
-    let y = array![0.0, 1.0];
-    let result = nb.fit(&x, &y, 0.0, 1);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter))
-    ));
-}
-
-#[test]
-fn naive_bayes_predict_not_fitted() {
-    let nb = NaiveBayesBuilder::new().build();
-    let x = array![[1.0, 0.0]];
-    let result = nb.predict(&x);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::NotFitted))
-    ));
-}
-
-#[test]
-fn naive_bayes_predict_dimension_mismatch() {
-    let mut nb = NaiveBayesBuilder::new().build();
-    let x_train = array![[1.0, 0.0], [0.0, 2.0]];
-    let y_train = array![0.0, 1.0];
-    nb.fit(&x_train, &y_train, 0.0, 1).unwrap();
-    let x_test = array![[1.0, 0.0, 0.0]];
-    let result = nb.predict(&x_test);
-    assert!(matches!(
-        result,
-        Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch {
-            expected: 2,
-            actual: 3
-        }))
-    ));
-}
-
-#[test]
-fn naive_bayes_fit_predict() {
-    let mut nb = NaiveBayesBuilder::new().normalize(false).alpha(1.0).build();
-    let x = array![[1.0, 0.0], [0.0, 2.0], [1.0, 1.0], [2.0, 0.0]];
-    let y = array![0.0, 1.0, 0.0, 2.0];
-    nb.fit(&x, &y, 0.0, 1).unwrap();
-    let predictions = nb.predict(&x).unwrap();
-    assert_eq!(predictions.len(), 4);
-    // Check if predictions are valid class labels
-    for &pred in predictions.iter() {
-        assert!(y.iter().any(|&label| label == pred));
+    
+    
+    #[test]
+    fn naive_bayes_fit_empty_input() {
+        let mut nb = NaiveBayesBuilder::new().build();
+        let x: Array2<f64> = Array2::zeros((0, 2));
+        let y: Array1<f64> = Array1::zeros(0);
+        let result = nb.fit(&x, &y, 0.0, 1);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::EmptyInput))
+        ));
+    }
+    
+    
+    #[test]
+    fn naive_bayes_fit_no_features() {
+        let mut nb = NaiveBayesBuilder::new().build();
+        let x: Array2<f64> = Array2::zeros((2, 0));
+        let y = array![0.0, 1.0];
+        let result = nb.fit(&x, &y, 0.0, 1);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::NoFeatures))
+        ));
+    }
+    
+    #[test]
+    fn naive_bayes_fit_dimension_mismatch() {
+        let mut nb = NaiveBayesBuilder::new().build();
+        let x = array![[1.0, 0.0], [0.0, 2.0]];
+        let y = array![0.0, 1.0, 0.0];
+        let result = nb.fit(&x, &y, 0.0, 1);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch {
+                expected: 2,
+                actual: 3
+            }))
+        ));
+    }
+    
+    #[test]
+    fn naive_bayes_fit_invalid_features() {
+        let mut nb = NaiveBayesBuilder::new().build();
+        let x = array![[1.0, -1.0], [0.0, 2.0]];
+        let y = array![0.0, 1.0];
+        let result = nb.fit(&x, &y, 0.0, 1);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::InvalidParameter))
+        ));
+    }
+    
+    #[test]
+    fn naive_bayes_predict_not_fitted() {
+        let nb = NaiveBayesBuilder::new().build();
+        let x = array![[1.0, 0.0]];
+        let result = nb.predict(&x);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::NotFitted))
+        ));
+    }
+    
+    #[test]
+    fn naive_bayes_predict_dimension_mismatch() {
+        let mut nb = NaiveBayesBuilder::new().build();
+        let x_train = array![[1.0, 0.0], [0.0, 2.0]];
+        let y_train = array![0.0, 1.0];
+        nb.fit(&x_train, &y_train, 0.0, 1).unwrap();
+        let x_test = array![[1.0, 0.0, 0.0]];
+        let result = nb.predict(&x_test);
+        assert!(matches!(
+            result,
+            Err(ModelError::Preprocessing(PreprocessingError::DimensionMismatch {
+                expected: 2,
+                actual: 3
+            }))
+        ));
+    }
+    
+    #[test]
+    fn naive_bayes_fit_predict() {
+        let mut nb = NaiveBayesBuilder::new().normalize(false).alpha(1.0).build();
+        let x = array![[1.0, 0.0], [0.0, 2.0], [1.0, 1.0], [2.0, 0.0]];
+        let y = array![0.0, 1.0, 0.0, 2.0];
+        nb.fit(&x, &y, 0.0, 1).unwrap();
+        let predictions = nb.predict(&x).unwrap();
+        assert_eq!(predictions.len(), 4);
+        // Check if predictions are valid class labels
+        for &pred in predictions.iter() {
+            assert!(y.iter().any(|&label| label == pred));
+        }
+    }
+    
+    #[test]
+    fn naive_bayes_multi_class() {
+        let mut nb = NaiveBayesBuilder::new().normalize(false).alpha(1.0).build();
+        let x = array![
+            [2.0, 0.0, 1.0],
+            [0.0, 3.0, 0.0],
+            [1.0, 1.0, 2.0],
+            [3.0, 0.0, 1.0],
+            [0.0, 2.0, 1.0]
+        ];
+        let y = array![0.0, 1.0, 2.0, 0.0, 1.0];
+        nb.fit(&x, &y, 0.0, 1).unwrap();
+        let predictions = nb.predict(&x).unwrap();
+        assert_eq!(predictions.len(), 5);
+        // Check if predictions are valid class labels
+        for &pred in predictions.iter() {
+            assert!(y.iter().any(|&label| label == pred));
+        }
     }
 }
 
-#[test]
-fn naive_bayes_multi_class() {
-    let mut nb = NaiveBayesBuilder::new().normalize(false).alpha(1.0).build();
-    let x = array![
-        [2.0, 0.0, 1.0],
-        [0.0, 3.0, 0.0],
-        [1.0, 1.0, 2.0],
-        [3.0, 0.0, 1.0],
-        [0.0, 2.0, 1.0]
-    ];
-    let y = array![0.0, 1.0, 2.0, 0.0, 1.0];
-    nb.fit(&x, &y, 0.0, 1).unwrap();
-    let predictions = nb.predict(&x).unwrap();
-    assert_eq!(predictions.len(), 5);
-    // Check if predictions are valid class labels
-    for &pred in predictions.iter() {
-        assert!(y.iter().any(|&label| label == pred));
-    }
-}
