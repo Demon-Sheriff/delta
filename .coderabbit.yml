@@ -1,0 +1,8 @@
+version: 1
+reviews:
+  - name: rust-review
+    tools:
+      - clippy
+    path_instructions:
+      - path: "**/*.rs"
+        instructions: "Review this Rust code for best practices, potential errors, and performance optimizations."
